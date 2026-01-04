@@ -1,0 +1,24 @@
+{
+  "tts": {
+    "api_key": "sk-your-siliconflow-api-key",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "FunAudioLLM/CosyVoice2-0.5B"
+  },
+  "llm_split": {
+    "api_key": "",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "Pro/zai-org/GLM-4.7"
+  },
+  "llm_optimize": {
+    "api_key": "",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "Pro/zai-org/GLM-4.7"
+  },
+  "max_subtitle_chars": 15,
+  "subtitle": {
+    "center_x": 0.5,
+    "center_y": 0.92,
+    "font": "Microsoft YaHei",
+    "size": 0.06
+  }
+}

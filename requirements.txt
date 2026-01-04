@@ -1,0 +1,16 @@
+# Voice Clone Studio Dependencies
+# Python 3.8+ required
+
+# Web Framework
+flask>=2.0.0
+flask-cors>=3.0.0
+
+# HTTP Requests
+requests>=2.25.0
+
+# Audio Processing (MP3 duration)
+mutagen>=1.45.0
+
+# Whisper STT (for subtitle timestamps)
+# Downloads ~100MB of dependencies (onnxruntime, ctranslate2, numpy)
+faster-whisper>=0.9.0
