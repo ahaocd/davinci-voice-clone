@@ -964,8 +964,8 @@ HTML = '''
         
         function switchPromptType() {
             const type = document.getElementById('promptType').value;
-            // 优先用保存的，没有则用默认的
-            const prompt = savedPrompts[type] || DEFAULT_PROMPTS[type];
+            // 优先用保存的（检查是否存在且不为空），没有则用默认的
+            const prompt = (savedPrompts[type] && savedPrompts[type].trim()) ? savedPrompts[type] : DEFAULT_PROMPTS[type];
             document.getElementById('systemPrompt').value = prompt;
         }
         
