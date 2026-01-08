@@ -631,17 +631,6 @@ HTML = '''
                 <div class="form-group">
                     <textarea id="ttsText" placeholder="在这里输入要转换的文字..."></textarea>
                 </div>
-                
-                <!-- 当前提示词显示 -->
-                <div style="margin-bottom:12px;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
-                    <div style="font-size:11px;color:#64748b;margin-bottom:4px;">
-                        <strong style="color:#0f172a;">📝 当前提示词：</strong>
-                    </div>
-                    <div id="currentPrompt" style="padding:8px;background:white;border-radius:6px;font-family:monospace;font-size:11px;color:#475569;line-height:1.6;min-height:40px;">
-                        <span style="color:#94a3b8;">在上方输入文字后，这里会实时显示...</span>
-                    </div>
-                </div>
-                
                 <!-- 语气标记提示 -->
                 <div style="font-size:11px;color:#64748b;margin-bottom:8px;line-height:1.8;background:#f8fafc;padding:10px;border-radius:8px;">
                     💡 <b>细粒度标记</b> <span style="color:#10b981;font-size:9px;">✅官方Demo验证</span> <span style="color:#94a3b8;font-size:9px;">（可放句中）</span><br>
@@ -841,6 +830,23 @@ HTML = '''
                         <div class="voice-grid" id="cloneVoices"></div>
                     </div>
                 </div>
+                
+                <!-- AI优化提示词 -->
+                <div class="card" style="margin-top: 12px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                        <h2 class="card-title" style="margin: 0; font-size: 13px;">🤖 AI优化提示词</h2>
+                        <select id="promptType" onchange="switchPromptType()" style="padding:4px 8px;font-size:11px;border-radius:4px;border:1px solid #e2e8f0;">
+                            <option value="cosyvoice">CosyVoice2</option>
+                            <option value="moss">MOSS-TTSD</option>
+                        </select>
+                    </div>
+                    <textarea id="systemPrompt" style="min-height:120px;font-size:11px;line-height:1.5;font-family:monospace;"></textarea>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+                        <span style="font-size:10px;color:#94a3b8;">点击"AI优化"按钮时使用此提示词</span>
+                        <button class="btn btn-secondary" onclick="savePrompt()" style="padding:4px 10px;font-size:11px;">💾 保存</button>
+                    </div>
+                    <div id="promptMsg" class="message" style="margin-top:8px;"></div>
+                </div>
             </div>
         </div>
 
@@ -891,9 +897,111 @@ HTML = '''
     <script>
         let selectedVoice = null;
         let voiceList = [];
+        
+        // AI优化提示词（默认值）
+        const DEFAULT_PROMPTS = {
+            cosyvoice: `你是一位资深配音导演，正在为视频配音做语气标注。你的任务是让文字读起来像真人说话一样自然。
+
+【官方Demo验证过的稳定标记】（只用这4个！）
+- [breath] 呼吸/停顿 - 说话人换气、思考、转折处
+- [laughter] 笑声 - 开心、幽默、自嘲时发出笑声
+- <strong>词</strong> - 强调重点词
+- <laughter>文字</laughter> - 边笑边说
+
+【情感指令】（只能放最开头，效果不稳定但可以尝试）
+如果整体情感明显，可以在开头加：
+- 用开心的语气说<|endofprompt|>
+- 用伤心的语气说<|endofprompt|>
+- 用惊讶的语气说<|endofprompt|>
+- 用生气的语气说<|endofprompt|>
+
+【你的工作流程】
+1. 通读全文，感受情感基调
+2. 如果整体情感明显，在开头加情感指令
+3. 逐句分析，在合适位置插入细粒度标记
+4. 删除所有空格
+
+【重要规则】
+1. 每2-3句话至少一个[breath]
+2. 幽默/开心处加[laughter]
+3. 关键词用<strong></strong>
+4. 绝对不要加空格！
+5. 情感指令只能放最开头！
+
+直接输出优化后的文本，不要解释。`,
+            moss: `你是专业配音演员和语音导演。任务：深度分析文本，添加语气标记让语音更自然生动。
+
+【格式要求】
+- 删除所有空格（官方要求）
+- 标点符号正常使用
+
+【可用标记】
+- [laughter] 笑声：开心、幽默、自嘲处
+- [breath] 呼吸停顿：思考、转折、情绪酝酿处
+- [S1] [S2] 说话人切换：对话场景
+
+【示例】
+原文：今天真是太开心了，终于放假了
+优化：[breath]今天真是太开心了，[laughter]终于放假了
+
+直接返回优化后的文本，不要任何解释。`
+        };
+        
+        // 用户保存的提示词
+        let savedPrompts = { cosyvoice: '', moss: '' };
+        
+        async function loadSavedPrompts() {
+            try {
+                const res = await fetch('/api/prompts');
+                const data = await res.json();
+                if (data.success && data.prompts) {
+                    savedPrompts = data.prompts;
+                }
+            } catch(e) {
+                console.error('加载提示词失败:', e);
+            }
+        }
+        
+        function switchPromptType() {
+            const type = document.getElementById('promptType').value;
+            // 优先用保存的，没有则用默认的
+            const prompt = savedPrompts[type] || DEFAULT_PROMPTS[type];
+            document.getElementById('systemPrompt').value = prompt;
+        }
+        
+        async function savePrompt() {
+            const type = document.getElementById('promptType').value;
+            const prompt = document.getElementById('systemPrompt').value;
+            const msgDiv = document.getElementById('promptMsg');
+            
+            try {
+                const res = await fetch('/api/prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type, prompt })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    savedPrompts[type] = prompt;
+                    showMsg(msgDiv, '✅ 已保存', true);
+                } else {
+                    showMsg(msgDiv, '保存失败: ' + data.message, false);
+                }
+            } catch(e) {
+                showMsg(msgDiv, '保存失败: ' + e, false);
+            }
+        }
+        
+        function resetPrompt() {
+            const type = document.getElementById('promptType').value;
+            document.getElementById('systemPrompt').value = DEFAULT_PROMPTS[type];
+        }
 
         async function loadVoices() {
             try {
+                // 先加载保存的提示词
+                await loadSavedPrompts();
+                
                 const res = await fetch('/api/voices');
                 const data = await res.json();
                 voiceList = data.clones || [];
@@ -930,6 +1038,9 @@ HTML = '''
                     div.onclick = () => selectVoice('preset', name, name, div);
                     presetDiv.appendChild(div);
                 });
+                
+                // 初始化提示词
+                switchPromptType();
             } catch(e) {
                 console.error('加载失败:', e);
             }
@@ -1111,7 +1222,6 @@ HTML = '''
             const newPos = pos + tag.length;
             textarea.selectionStart = textarea.selectionEnd = newPos;
             lastCursorPos = newPos;
-            updateCurrentPrompt();
         }
 
         function insertAtStart(tag) {
@@ -1123,34 +1233,17 @@ HTML = '''
             textarea.value = tag + text;
             textarea.focus();
             lastCursorPos = tag.length;
-            updateCurrentPrompt();
         }
-        
-        function updateCurrentPrompt() {
-            const text = document.getElementById('ttsText').value;
-            const promptDiv = document.getElementById('currentPrompt');
-            if (text.trim()) {
-                promptDiv.textContent = text;
-                promptDiv.style.color = '#475569';
-            } else {
-                promptDiv.innerHTML = '<span style="color:#94a3b8;">在上方输入文字后，这里会实时显示...</span>';
-            }
-        }
-        
-        // 监听文本框输入
-        document.addEventListener('DOMContentLoaded', function() {
-            const textarea = document.getElementById('ttsText');
-            textarea.addEventListener('input', updateCurrentPrompt);
-            textarea.addEventListener('change', updateCurrentPrompt);
-        });
 
         async function aiOptimizeText() {
             const text = document.getElementById('ttsText').value.trim();
             const model = document.getElementById('modelSelect').value;
+            const systemPrompt = document.getElementById('systemPrompt').value;
             const btn = document.getElementById('aiOptBtn');
             const msgDiv = document.getElementById('genMsg');
 
             if (!text) { showMsg(msgDiv, '请先输入文字', false); return; }
+            if (!systemPrompt) { showMsg(msgDiv, '请填写AI优化提示词', false); return; }
 
             btn.disabled = true;
             btn.innerHTML = 'AI优化中... <span class="spinner"></span>';
@@ -1159,7 +1252,7 @@ HTML = '''
                 const res = await fetch('/api/ai_optimize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, model })
+                    body: JSON.stringify({ text, model, system_prompt: systemPrompt })
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -2361,83 +2454,13 @@ def api_ai_optimize():
     try:
         data = request.json
         text = data.get('text', '').strip()
-        model_type = data.get('model', 'cosyvoice')
+        system_prompt = data.get('system_prompt', '').strip()
         
         if not text:
             return jsonify({"success": False, "message": "请输入文字"})
         
-        # 根据模型类型选择不同的提示词
-        if model_type == 'moss':
-            # MOSS-TTSD 支持的标记
-            system_prompt = """你是专业配音演员和语音导演。任务：深度分析文本，添加语气标记让语音更自然生动。
-
-【第一步：深度分析】
-1. 这段文字的核心主题是什么？
-2. 整体情感基调：开心/悲伤/愤怒/平静/激动/感慨？
-3. 哪些地方有情绪转折或变化？
-4. 哪些词句需要强调或停顿？
-
-【格式要求】
-- 删除所有空格（官方要求）
-- 标点符号正常使用
-
-【可用标记】
-- [laughter] 笑声：开心、幽默、自嘲处
-- [breath] 呼吸停顿：思考、转折、情绪酝酿处
-- [S1] [S2] 说话人切换：对话场景
-
-【示例】
-原文：今天真是太开心了，终于放假了
-优化：[breath]今天真是太开心了，[laughter]终于放假了
-
-直接返回优化后的文本，不要任何解释。"""
-        else:
-            # CosyVoice2 官方支持的标记（来自tokenizer.py L248-258）
-            system_prompt = """你是一位资深配音导演，正在为视频配音做语气标注。你的任务是让文字读起来像真人说话一样自然。
-
-【官方Demo验证过的稳定标记】（只用这4个！）
-- [breath] 呼吸/停顿 - 说话人换气、思考、转折处
-- [laughter] 笑声 - 开心、幽默、自嘲时发出笑声
-- <strong>词</strong> - 强调重点词
-- <laughter>文字</laughter> - 边笑边说
-
-【情感指令】（只能放最开头，效果不稳定但可以尝试）
-如果整体情感明显，可以在开头加：
-- 用开心的语气说<|endofprompt|>
-- 用伤心的语气说<|endofprompt|>
-- 用惊讶的语气说<|endofprompt|>
-- 用生气的语气说<|endofprompt|>
-- 神秘<|endofprompt|>
-- 快速<|endofprompt|>
-
-【你的工作流程】
-1. 通读全文，感受情感基调
-2. 如果整体情感明显（开心/伤心/愤怒等），在开头加情感指令
-3. 逐句分析，在合适位置插入细粒度标记
-4. 删除所有空格
-
-【官方示例学习】
-原文：在他讲述那个荒诞故事的过程中，他突然停下来，因为他自己也被逗笑了。
-优化：在他讲述那个荒诞故事的过程中，他突然[laughter]停下来，因为他自己也被逗笑了[laughter]。
-
-原文：因为他们那一辈人在乡里面住的要习惯一点，邻居都很活络
-优化：[breath]因为他们那一辈人[breath]在乡里面住的要习惯一点，[breath]邻居都很活络
-
-原文：追求卓越不是终点，它需要你每天都付出和精进，最终才能达到巅峰。
-优化：追求卓越不是终点，它需要你每天都<strong>付出</strong>和<strong>精进</strong>，最终才能达到巅峰。
-
-原文：今天真是太开心了，终于放假了
-优化：用开心的语气说<|endofprompt|>[breath]今天真是太开心了，[laughter]终于放假了
-
-【重要规则】
-1. 每2-3句话至少一个[breath]
-2. 幽默/开心处加[laughter]
-3. 关键词用<strong></strong>
-4. 绝对不要加空格！
-5. 情感指令只能放最开头，不能放中间！
-6. 不要用[cough][noise][lipsmack][sigh][mn]这些不稳定标记！
-
-直接输出优化后的文本，不要解释。"""
+        if not system_prompt:
+            return jsonify({"success": False, "message": "请填写AI优化提示词"})
 
         # 获取LLM优化配置
         config = get_config()
@@ -2492,6 +2515,32 @@ def api_ai_optimize():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "message": f"优化失败: {e}"})
+
+# ============ 提示词API ============
+@app.route('/api/prompts', methods=['GET'])
+def get_prompts():
+    """获取保存的提示词"""
+    config = get_config()
+    prompts = config.get('prompts', {})
+    return jsonify({"success": True, "prompts": prompts})
+
+@app.route('/api/prompts', methods=['POST'])
+def save_prompts():
+    """保存提示词"""
+    try:
+        data = request.json
+        prompt_type = data.get('type', 'cosyvoice')
+        prompt = data.get('prompt', '')
+        
+        config = get_config()
+        if 'prompts' not in config:
+            config['prompts'] = {}
+        config['prompts'][prompt_type] = prompt
+        save_tool_config(config)
+        
+        return jsonify({"success": True, "message": "已保存"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
 
 # ============ 配置API ============
 @app.route('/api/config', methods=['GET'])
