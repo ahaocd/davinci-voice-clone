@@ -667,6 +667,20 @@ HTML = '''
                 </div>
                 <div id="genMsg" class="message"></div>
                 <audio id="player" controls style="display:none;"></audio>
+                
+                <!-- 生成信息区域 -->
+                <div id="generationInfo" style="display:none;margin-top:12px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                    <div style="font-size:11px;color:#64748b;margin-bottom:8px;">
+                        <strong style="color:#0f172a;">📝 使用的提示词：</strong>
+                        <div id="usedPrompt" style="margin-top:4px;padding:8px;background:white;border-radius:6px;font-family:monospace;font-size:11px;color:#475569;line-height:1.6;"></div>
+                    </div>
+                    <div style="font-size:11px;color:#64748b;display:flex;gap:12px;flex-wrap:wrap;">
+                        <span>🎵 <a id="audioDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载音频</a></span>
+                        <span id="srtDownloadWrap" style="display:none;">📄 <a id="srtDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载字幕(SRT)</a></span>
+                        <span id="jsonDownloadWrap" style="display:none;">📊 <a id="jsonDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载时间轴(JSON)</a></span>
+                    </div>
+                </div>
+                
                 <div style="display:flex;gap:8px;margin-top:8px;">
                     <button class="btn btn-secondary" id="davinciBtn" onclick="importToDavinci()" style="display:none;">🎬 导入达芬奇</button>
                     <button class="btn btn-secondary" id="davinciConfigBtn" onclick="showDavinciConfig()" style="font-size:12px;padding:6px 12px;">⚙️ 达芬奇</button>
@@ -978,6 +992,41 @@ HTML = '''
                     player.src = data.audio_url + '?t=' + Date.now();
                     player.style.display = 'block';
                     player.play();
+                    
+                    // 显示生成信息
+                    const infoDiv = document.getElementById('generationInfo');
+                    const promptDiv = document.getElementById('usedPrompt');
+                    const audioLink = document.getElementById('audioDownload');
+                    const srtLink = document.getElementById('srtDownload');
+                    const jsonLink = document.getElementById('jsonDownload');
+                    const srtWrap = document.getElementById('srtDownloadWrap');
+                    const jsonWrap = document.getElementById('jsonDownloadWrap');
+                    
+                    // 显示使用的提示词
+                    promptDiv.textContent = text;
+                    
+                    // 设置下载链接
+                    audioLink.href = data.audio_url;
+                    audioLink.download = data.audio_url.split('/').pop();
+                    
+                    if (data.srt_url) {
+                        srtLink.href = data.srt_url;
+                        srtLink.download = data.srt_url.split('/').pop();
+                        srtWrap.style.display = 'inline';
+                    } else {
+                        srtWrap.style.display = 'none';
+                    }
+                    
+                    if (data.json_url) {
+                        jsonLink.href = data.json_url;
+                        jsonLink.download = data.json_url.split('/').pop();
+                        jsonWrap.style.display = 'inline';
+                    } else {
+                        jsonWrap.style.display = 'none';
+                    }
+                    
+                    infoDiv.style.display = 'block';
+                    
                     // 保存音频、字幕文件名和segments数据，显示达芬奇按钮
                     window.lastAudioFile = data.audio_url.split('/').pop();
                     window.lastSrtFile = data.srt_url ? data.srt_url.split('/').pop() : null;
