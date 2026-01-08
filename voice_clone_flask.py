@@ -54,6 +54,10 @@ def load_tool_config():
                             default_config[key].update(user_config[key])
                         else:
                             default_config[key] = user_config[key]
+                # 保留用户自定义的额外配置（如prompts）
+                for key in user_config:
+                    if key not in default_config:
+                        default_config[key] = user_config[key]
         except Exception as e:
             print(f"[WARN] 加载配置文件失败: {e}")
     else:
@@ -954,8 +958,12 @@ HTML = '''
             try {
                 const res = await fetch('/api/prompts');
                 const data = await res.json();
+                console.log('API返回:', data);
                 if (data.success && data.prompts) {
-                    savedPrompts = data.prompts;
+                    // 合并而不是覆盖
+                    if (data.prompts.cosyvoice) savedPrompts.cosyvoice = data.prompts.cosyvoice;
+                    if (data.prompts.moss) savedPrompts.moss = data.prompts.moss;
+                    console.log('加载的提示词:', savedPrompts);
                 }
             } catch(e) {
                 console.error('加载提示词失败:', e);
