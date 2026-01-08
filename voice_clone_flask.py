@@ -73,12 +73,26 @@ def get_config():
     """获取最新配置（每次调用都重新读取）"""
     return load_tool_config()
 
+# 兼容旧的system.conf
+def load_legacy_config():
+    config = {}
+    config_path = Path(__file__).parent.parent.parent.parent / "system.conf"
+    if config_path.exists():
+        for line in open(config_path, 'r', encoding='utf-8'):
+            line = line.strip()
+            if line and not line.startswith('#') and not line.startswith('[') and '=' in line:
+                k, v = line.split('=', 1)
+                config[k.strip()] = v.strip()
+    return config
+
 # 加载配置
 TOOL_CONFIG = load_tool_config()
+LEGACY_CONFIG = load_legacy_config()
 
+# API密钥优先从新配置读取，没有则从旧配置读取
 def get_tts_api_key():
     config = get_config()
-    return config['tts'].get('api_key', '')
+    return config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
 
 def get_tts_base_url():
     config = get_config()
@@ -115,7 +129,7 @@ def save_voices_db(voices):
 def upload_voice_to_server(file_path, custom_name, ref_text):
     """上传音频到SiliconFlow服务器，获取预置音色uri"""
     config = get_config()
-    api_key = config['tts'].get('api_key', '')
+    api_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = config['tts'].get('base_url', 'https://api.siliconflow.cn/v1')
     
     url = f"{base_url}/uploads/audio/voice"
@@ -140,7 +154,7 @@ def upload_voice_to_server(file_path, custom_name, ref_text):
 def get_server_voices():
     """获取服务器上的用户预置音色列表"""
     config = get_config()
-    api_key = config['tts'].get('api_key', '')
+    api_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = config['tts'].get('base_url', 'https://api.siliconflow.cn/v1')
     
     url = f"{base_url}/audio/voice/list"
@@ -153,7 +167,7 @@ def get_server_voices():
 def delete_server_voice(uri):
     """删除服务器上的预置音色"""
     config = get_config()
-    api_key = config['tts'].get('api_key', '')
+    api_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = config['tts'].get('base_url', 'https://api.siliconflow.cn/v1')
     
     url = f"{base_url}/audio/voice/deletions"
@@ -617,6 +631,17 @@ HTML = '''
                 <div class="form-group">
                     <textarea id="ttsText" placeholder="在这里输入要转换的文字..."></textarea>
                 </div>
+                
+                <!-- 当前提示词显示 -->
+                <div style="margin-bottom:12px;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                    <div style="font-size:11px;color:#64748b;margin-bottom:4px;">
+                        <strong style="color:#0f172a;">📝 当前提示词：</strong>
+                    </div>
+                    <div id="currentPrompt" style="padding:8px;background:white;border-radius:6px;font-family:monospace;font-size:11px;color:#475569;line-height:1.6;min-height:40px;">
+                        <span style="color:#94a3b8;">在上方输入文字后，这里会实时显示...</span>
+                    </div>
+                </div>
+                
                 <!-- 语气标记提示 -->
                 <div style="font-size:11px;color:#64748b;margin-bottom:8px;line-height:1.8;background:#f8fafc;padding:10px;border-radius:8px;">
                     💡 <b>细粒度标记</b> <span style="color:#10b981;font-size:9px;">✅官方Demo验证</span> <span style="color:#94a3b8;font-size:9px;">（可放句中）</span><br>
@@ -668,16 +693,11 @@ HTML = '''
                 <div id="genMsg" class="message"></div>
                 <audio id="player" controls style="display:none;"></audio>
                 
-                <!-- 生成信息区域 -->
-                <div id="generationInfo" style="display:none;margin-top:12px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
-                    <div style="font-size:11px;color:#64748b;margin-bottom:8px;">
-                        <strong style="color:#0f172a;">📝 使用的提示词：</strong>
-                        <div id="usedPrompt" style="margin-top:4px;padding:8px;background:white;border-radius:6px;font-family:monospace;font-size:11px;color:#475569;line-height:1.6;"></div>
-                    </div>
-                    <div style="font-size:11px;color:#64748b;display:flex;gap:12px;flex-wrap:wrap;">
+                <!-- 下载链接区域 -->
+                <div id="downloadLinks" style="display:none;margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                    <div style="font-size:11px;color:#64748b;display:flex;gap:16px;flex-wrap:wrap;">
                         <span>🎵 <a id="audioDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载音频</a></span>
-                        <span id="srtDownloadWrap" style="display:none;">📄 <a id="srtDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载字幕(SRT)</a></span>
-                        <span id="jsonDownloadWrap" style="display:none;">📊 <a id="jsonDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载时间轴(JSON)</a></span>
+                        <span id="srtDownloadWrap" style="display:none;">📄 <a id="srtDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载字幕</a></span>
                     </div>
                 </div>
                 
@@ -993,17 +1013,11 @@ HTML = '''
                     player.style.display = 'block';
                     player.play();
                     
-                    // 显示生成信息
-                    const infoDiv = document.getElementById('generationInfo');
-                    const promptDiv = document.getElementById('usedPrompt');
+                    // 显示下载链接
+                    const linksDiv = document.getElementById('downloadLinks');
                     const audioLink = document.getElementById('audioDownload');
                     const srtLink = document.getElementById('srtDownload');
-                    const jsonLink = document.getElementById('jsonDownload');
                     const srtWrap = document.getElementById('srtDownloadWrap');
-                    const jsonWrap = document.getElementById('jsonDownloadWrap');
-                    
-                    // 显示使用的提示词
-                    promptDiv.textContent = text;
                     
                     // 设置下载链接
                     audioLink.href = data.audio_url;
@@ -1017,15 +1031,7 @@ HTML = '''
                         srtWrap.style.display = 'none';
                     }
                     
-                    if (data.json_url) {
-                        jsonLink.href = data.json_url;
-                        jsonLink.download = data.json_url.split('/').pop();
-                        jsonWrap.style.display = 'inline';
-                    } else {
-                        jsonWrap.style.display = 'none';
-                    }
-                    
-                    infoDiv.style.display = 'block';
+                    linksDiv.style.display = 'block';
                     
                     // 保存音频、字幕文件名和segments数据，显示达芬奇按钮
                     window.lastAudioFile = data.audio_url.split('/').pop();
@@ -1105,6 +1111,7 @@ HTML = '''
             const newPos = pos + tag.length;
             textarea.selectionStart = textarea.selectionEnd = newPos;
             lastCursorPos = newPos;
+            updateCurrentPrompt();
         }
 
         function insertAtStart(tag) {
@@ -1116,7 +1123,26 @@ HTML = '''
             textarea.value = tag + text;
             textarea.focus();
             lastCursorPos = tag.length;
+            updateCurrentPrompt();
         }
+        
+        function updateCurrentPrompt() {
+            const text = document.getElementById('ttsText').value;
+            const promptDiv = document.getElementById('currentPrompt');
+            if (text.trim()) {
+                promptDiv.textContent = text;
+                promptDiv.style.color = '#475569';
+            } else {
+                promptDiv.innerHTML = '<span style="color:#94a3b8;">在上方输入文字后，这里会实时显示...</span>';
+            }
+        }
+        
+        // 监听文本框输入
+        document.addEventListener('DOMContentLoaded', function() {
+            const textarea = document.getElementById('ttsText');
+            textarea.addEventListener('input', updateCurrentPrompt);
+            textarea.addEventListener('change', updateCurrentPrompt);
+        });
 
         async function aiOptimizeText() {
             const text = document.getElementById('ttsText').value.trim();
@@ -1449,7 +1475,7 @@ def ai_split_text(text, max_chars=15):
     # 获取LLM分割配置
     config = get_config()
     llm_config = config['llm_split']
-    api_key = llm_config.get('api_key') or config['tts'].get('api_key', '')
+    api_key = llm_config.get('api_key') or config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = llm_config.get('base_url', 'https://api.siliconflow.cn/v1')
     model = llm_config.get('model', 'Pro/zai-org/GLM-4.7')
     
@@ -1571,7 +1597,7 @@ def api_tts():
         # 获取TTS配置
         config = get_config()
         tts_config = config['tts']
-        api_key = tts_config.get('api_key', '')
+        api_key = tts_config.get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
         base_url = tts_config.get('base_url', 'https://api.siliconflow.cn/v1')
         tts_model = tts_config.get('model', 'FunAudioLLM/CosyVoice2-0.5B')
         
@@ -1680,39 +1706,36 @@ def whisper_transcribe(audio_path):
         
         max_chars = TOOL_CONFIG.get('max_subtitle_chars', 15)
         
-        # 模型目录
+        # 模型下载到项目目录，不是C盘
         model_dir = BASE_DIR / "models"
+        model_dir.mkdir(exist_ok=True)
+        
+        # 检查本地模型是否存在
         local_model_path = model_dir / "faster-whisper-small"
-        model_dir.mkdir(parents=True, exist_ok=True)
         
         print("[INFO] 加载Whisper模型...")
-        try:
-            # 优先使用本地模型
-            if local_model_path.exists() and (local_model_path / "model.bin").exists():
-                print(f"[INFO] 使用本地模型: {local_model_path}")
-                model = WhisperModel(
-                    str(local_model_path),
-                    device="cpu",
-                    compute_type="int8"
-                )
-            else:
-                print("[INFO] 本地模型不存在，尝试在线下载...")
-                model = WhisperModel(
-                    "small",
-                    device="cpu",
-                    compute_type="int8",
-                    download_root=str(model_dir)
-                )
-        except Exception as e:
-            print(f"[WARN] Whisper模型加载失败: {e}")
-            return None
+        if local_model_path.exists() and (local_model_path / "model.bin").exists():
+            # 使用本地下载的模型
+            model = WhisperModel(
+                str(local_model_path),
+                device="cpu",
+                compute_type="int8"
+            )
+        else:
+            # 自动下载（需要网络）
+            model = WhisperModel(
+                "small",
+                device="cpu",
+                compute_type="int8",
+                download_root=str(model_dir)
+            )
         
         print(f"[INFO] Whisper识别: {audio_path}")
         segments, info = model.transcribe(
             audio_path,
             language="zh",
-            word_timestamps=True,
-            vad_filter=True
+            word_timestamps=True,  # 获取每个词的时间戳
+            vad_filter=True  # 过滤静音
         )
         
         # 收集所有词和时间戳
@@ -1730,17 +1753,19 @@ def whisper_transcribe(audio_path):
             print("[WARN] Whisper没有识别到词")
             return None
         
-        # 合并词为字幕段落
+        # 合并词为字幕段落，每段不超过max_chars
         final_segments = merge_words_to_segments(all_words, max_chars)
         
         print(f"[INFO] Whisper识别成功: {len(final_segments)}段")
         return final_segments
         
     except ImportError:
-        print("[WARN] faster-whisper未安装")
+        print("[ERROR] 请安装faster-whisper: pip install faster-whisper")
         return None
     except Exception as e:
         print(f"[ERROR] Whisper识别失败: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def whisper_get_timestamps(audio_path):
@@ -1748,33 +1773,13 @@ def whisper_get_timestamps(audio_path):
     try:
         from faster_whisper import WhisperModel
         
-        # 模型目录
         model_dir = BASE_DIR / "models"
         local_model_path = model_dir / "faster-whisper-small"
-        model_dir.mkdir(parents=True, exist_ok=True)
         
         print("[INFO] 加载Whisper模型...")
-        
-        # 优先使用本地模型
-        try:
-            if local_model_path.exists() and (local_model_path / "model.bin").exists():
-                print(f"[INFO] 使用本地模型: {local_model_path}")
-                model = WhisperModel(
-                    str(local_model_path),
-                    device="cpu",
-                    compute_type="int8"
-                )
-            else:
-                print("[INFO] 本地模型不存在，尝试在线下载...")
-                model = WhisperModel(
-                    "small",
-                    device="cpu",
-                    compute_type="int8",
-                    download_root=str(model_dir)
-                )
-        except Exception as e:
-            print(f"[WARN] Whisper模型加载失败: {e}")
-            print("[INFO] 将使用估算时间戳")
+        if local_model_path.exists() and (local_model_path / "model.bin").exists():
+            model = WhisperModel(str(local_model_path), device="cpu", compute_type="int8")
+        else:
             return None
         
         segments, info = model.transcribe(
@@ -1798,9 +1803,6 @@ def whisper_get_timestamps(audio_path):
         print(f"[INFO] Whisper获取时间戳: {len(timestamps)}个词")
         return timestamps
         
-    except ImportError:
-        print("[WARN] faster-whisper未安装，使用估算时间戳")
-        return None
     except Exception as e:
         print(f"[ERROR] Whisper获取时间戳失败: {e}")
         return None
@@ -2440,7 +2442,7 @@ def api_ai_optimize():
         # 获取LLM优化配置
         config = get_config()
         llm_config = config['llm_optimize']
-        api_key = llm_config.get('api_key') or config['tts'].get('api_key', '')
+        api_key = llm_config.get('api_key') or config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
         base_url = llm_config.get('base_url', 'https://api.siliconflow.cn/v1')
         model = llm_config.get('model', 'Pro/zai-org/GLM-4.7')
         
@@ -2564,7 +2566,7 @@ def save_api_config():
 
 if __name__ == "__main__":
     config = get_config()
-    tts_key = config['tts'].get('api_key', '')
+    tts_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     
     print("=" * 60)
     print("🎙️  声音克隆工具 - SiliconFlow CosyVoice2")
