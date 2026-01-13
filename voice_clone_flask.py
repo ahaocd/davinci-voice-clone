@@ -1548,21 +1548,23 @@ def clean_text_for_subtitle(text):
     
     # 1. 清理情感/方言指令（xxx<|endofprompt|> 格式，整个删除）
     # 例如：用四川话说<|endofprompt|>正文 -> 正文
-    # 注意：指令只能在开头，所以用^匹配
-    text = re.sub(r'^[^<]*<\|endofprompt\|>', '', text)
+    # 注意：指令可能在开头或中间（AI优化后可能插入）
+    text = re.sub(r'[^<\n]*<\|endofprompt\|>', '', text)
     
     # 2. 清理所有方括号标签 [breath] [sigh] [laughter] [mn] [cough] [noise] [quick_breath] [lipsmack] 等
-    text = re.sub(r'\[[a-z_-]+\]', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\[[a-zA-Z_-]+\]', '', text)
     
-    # 3. 清理XML风格标签 <strong> </strong> <laughter> </laughter>
+    # 3. 清理XML风格标签 <strong> </strong> <laughter> </laughter> 等
     text = re.sub(r'</?strong>', '', text)
     text = re.sub(r'</?laughter>', '', text)
+    text = re.sub(r'</?[a-zA-Z]+>', '', text)  # 清理所有HTML标签
     
-    # 4. 清理可能残留的 <|endofprompt|>（以防万一）
-    text = re.sub(r'<\|endofprompt\|>', '', text)
+    # 4. 清理可能残留的特殊标记
+    text = re.sub(r'<\|[^|]+\|>', '', text)  # 清理所有 <|xxx|> 格式
     
-    # 5. 清理多余空格
+    # 5. 清理多余空格和特殊字符
     text = re.sub(r'\s+', '', text)
+    text = text.replace('　', '').replace('\u3000', '')
     
     return text.strip()
 
@@ -1870,100 +1872,92 @@ def whisper_transcribe(audio_path):
         return None
 
 def whisper_get_timestamps(audio_path):
-    """只用Whisper获取时间戳，不用它的文字识别结果"""
+    """用Whisper获取segment级别时间戳（更准确）"""
     try:
         from faster_whisper import WhisperModel
         
         model_dir = BASE_DIR / "models"
         local_model_path = model_dir / "faster-whisper-small"
         
-        print("[INFO] 加载Whisper模型...")
+        print("[INFO] 加载Whisper模型(faster-whisper-small)...")
         if local_model_path.exists() and (local_model_path / "model.bin").exists():
             model = WhisperModel(str(local_model_path), device="cpu", compute_type="int8")
         else:
+            print("[ERROR] 模型文件不存在")
             return None
         
         segments, info = model.transcribe(
             audio_path,
             language="zh",
-            word_timestamps=True,
+            word_timestamps=False,  # 用segment级别，更稳定
             vad_filter=True
         )
         
-        # 只收集时间戳
+        # 收集segment时间戳
         timestamps = []
         for segment in segments:
-            if segment.words:
-                for word in segment.words:
-                    timestamps.append({
-                        "start": word.start,
-                        "end": word.end,
-                        "char_count": len(word.word.strip())
-                    })
+            timestamps.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text.strip()
+            })
+            print(f"[DEBUG] Segment: {segment.start:.2f}-{segment.end:.2f} | {segment.text.strip()[:20]}...")
         
-        print(f"[INFO] Whisper获取时间戳: {len(timestamps)}个词")
+        print(f"[INFO] Whisper获取时间戳: {len(timestamps)}个segment")
         return timestamps
         
     except Exception as e:
         print(f"[ERROR] Whisper获取时间戳失败: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def align_text_with_timestamps(text_segments, timestamps):
-    """将原文段落与Whisper时间戳对齐
+    """将原文段落与Whisper segment时间戳对齐
     
-    策略：用Whisper的词级时间戳，按字符数累计来分配时间
+    新策略：直接使用Whisper segment的时间线，按字符比例分配
     """
     if not timestamps or not text_segments:
+        print("[WARN] align_text_with_timestamps: 无时间戳或文本段落")
         return None
     
-    # 计算Whisper识别的总字符数和总时长
-    total_whisper_chars = sum(t.get('char_count', 1) for t in timestamps)
-    total_duration = timestamps[-1]['end'] if timestamps else 10
+    # 构建连续时间线
+    total_start = timestamps[0]['start']
+    total_end = timestamps[-1]['end']
+    total_duration = total_end - total_start
+    
+    print(f"[DEBUG] 音频时间范围: {total_start:.2f}s - {total_end:.2f}s (总时长: {total_duration:.2f}s)")
     
     # 计算原文总字符数
     total_text_chars = sum(len(seg) for seg in text_segments)
-    
     if total_text_chars == 0:
         return None
     
-    # 构建时间映射：根据Whisper的词时间戳，建立字符位置->时间的映射
-    char_to_time = []
-    for ts in timestamps:
-        char_count = ts.get('char_count', 1)
-        start = ts['start']
-        end = ts['end']
-        # 每个字符的时间
-        for i in range(char_count):
-            progress = i / char_count if char_count > 1 else 0
-            char_time = start + (end - start) * progress
-            char_to_time.append(char_time)
-    char_to_time.append(total_duration)  # 结尾
+    print(f"[DEBUG] 原文总字符数: {total_text_chars}, 段落数: {len(text_segments)}")
     
-    # 为每个文本段落分配时间
+    # 为每个文本段落分配时间（按字符比例）
     segments_info = []
     current_char_pos = 0
     
-    for seg in text_segments:
+    for i, seg in enumerate(text_segments):
         seg_len = len(seg)
+        if seg_len == 0:
+            continue
         
-        # 计算这个段落对应的Whisper字符位置（按比例）
+        # 按字符比例计算时间
         start_ratio = current_char_pos / total_text_chars
         end_ratio = (current_char_pos + seg_len) / total_text_chars
         
-        # 映射到Whisper的字符位置
-        whisper_start_pos = int(start_ratio * len(char_to_time))
-        whisper_end_pos = int(end_ratio * len(char_to_time))
+        start_time = total_start + (total_duration * start_ratio)
+        end_time = total_start + (total_duration * end_ratio)
         
-        # 确保在范围内
-        whisper_start_pos = max(0, min(whisper_start_pos, len(char_to_time) - 1))
-        whisper_end_pos = max(0, min(whisper_end_pos, len(char_to_time) - 1))
+        # 确保最小时长0.3秒
+        if end_time - start_time < 0.3:
+            end_time = start_time + 0.3
         
-        start_time = char_to_time[whisper_start_pos]
-        end_time = char_to_time[whisper_end_pos] if whisper_end_pos < len(char_to_time) else total_duration
-        
-        # 确保end > start
-        if end_time <= start_time:
-            end_time = start_time + 0.5
+        # 确保不超过总时长
+        if end_time > total_end:
+            end_time = total_end
         
         segments_info.append({
             "text": seg,
@@ -1971,8 +1965,18 @@ def align_text_with_timestamps(text_segments, timestamps):
             "end": round(end_time, 2)
         })
         
+        print(f"[DEBUG] 段落{i+1}: {start_time:.2f}-{end_time:.2f} | {seg[:15]}...")
         current_char_pos += seg_len
     
+    # 后处理：防止重叠，确保连续
+    for i in range(1, len(segments_info)):
+        if segments_info[i]['start'] < segments_info[i-1]['end']:
+            # 有重叠，调整
+            mid = (segments_info[i-1]['end'] + segments_info[i]['start']) / 2
+            segments_info[i-1]['end'] = round(mid, 2)
+            segments_info[i]['start'] = round(mid, 2)
+    
+    print(f"[INFO] 对齐完成: {len(segments_info)}个字幕段落")
     return segments_info
 
 def merge_words_to_segments(words, max_chars):
@@ -2497,7 +2501,7 @@ def api_ai_optimize():
             f"{base_url}/chat/completions",
             headers=headers,
             json=payload,
-            timeout=60,
+            timeout=180,
             proxies={"http": None, "https": None}
         )
         
