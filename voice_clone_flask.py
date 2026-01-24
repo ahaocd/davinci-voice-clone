@@ -93,6 +93,35 @@ def load_legacy_config():
 TOOL_CONFIG = load_tool_config()
 LEGACY_CONFIG = load_legacy_config()
 
+# 全局 Whisper 模型缓存（避免每次都加载）
+WHISPER_MODEL = None
+WHISPER_MODEL_LOCK = None
+
+def get_whisper_model():
+    """获取 Whisper 模型（全局缓存，只加载一次）"""
+    global WHISPER_MODEL
+    
+    if WHISPER_MODEL is not None:
+        return WHISPER_MODEL
+    
+    try:
+        from faster_whisper import WhisperModel
+        
+        model_dir = BASE_DIR / "models"
+        local_model_path = model_dir / "faster-whisper-small"
+        
+        if local_model_path.exists() and (local_model_path / "model.bin").exists():
+            print("[INFO] 首次加载 Whisper 模型(faster-whisper-small)...")
+            WHISPER_MODEL = WhisperModel(str(local_model_path), device="cpu", compute_type="int8")
+            print("[INFO] Whisper 模型加载完成！后续调用将直接使用缓存")
+            return WHISPER_MODEL
+        else:
+            print("[ERROR] Whisper 模型文件不存在")
+            return None
+    except Exception as e:
+        print(f"[ERROR] 加载 Whisper 模型失败: {e}")
+        return None
+
 # API密钥优先从新配置读取，没有则从旧配置读取
 def get_tts_api_key():
     config = get_config()
@@ -130,11 +159,15 @@ def save_voices_db(voices):
         json.dump(voices, f, ensure_ascii=False, indent=2)
 
 # ============ API 函数 ============
-def upload_voice_to_server(file_path, custom_name, ref_text):
+def upload_voice_to_server(file_path, custom_name, ref_text, model=None):
     """上传音频到SiliconFlow服务器，获取预置音色uri"""
     config = get_config()
     api_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = config['tts'].get('base_url', 'https://api.siliconflow.cn/v1')
+    
+    # 如果没有指定模型，使用配置中的默认模型
+    if model is None:
+        model = config['tts'].get('model', 'FunAudioLLM/CosyVoice2-0.5B')
     
     url = f"{base_url}/uploads/audio/voice"
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -142,7 +175,7 @@ def upload_voice_to_server(file_path, custom_name, ref_text):
     with open(file_path, 'rb') as f:
         files = {"file": f}
         data = {
-            "model": config['tts'].get('model', 'FunAudioLLM/CosyVoice2-0.5B'),
+            "model": model,
             "customName": custom_name,
             "text": ref_text
         }
@@ -180,8 +213,53 @@ def delete_server_voice(uri):
                         timeout=30, proxies={"http": None, "https": None})
     return resp.status_code == 200
 
+# ============ STT 语音识别函数 ============
+def stt_transcribe(audio_path):
+    """使用 faster-whisper 进行语音识别"""
+    try:
+        model = get_whisper_model()
+        if model is None:
+            return {"success": False, "message": "Whisper 模型加载失败"}
+        
+        segments, info = model.transcribe(str(audio_path), language="zh", beam_size=5)
+        
+        # 收集所有文本
+        full_text = ""
+        segments_list = []
+        for segment in segments:
+            full_text += segment.text
+            segments_list.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text
+            })
+        
+        # 繁简转换
+        try:
+            from opencc import OpenCC
+            cc = OpenCC('t2s')  # 繁体转简体
+            full_text_simplified = cc.convert(full_text)
+            for seg in segments_list:
+                seg['text'] = cc.convert(seg['text'])
+        except:
+            print("[WARN] OpenCC 未安装，跳过繁简转换")
+            full_text_simplified = full_text
+        
+        return {
+            "success": True,
+            "text": full_text_simplified,
+            "segments": segments_list,
+            "language": info.language,
+            "duration": info.duration
+        }
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] STT识别失败: {error_detail}")
+        return {"success": False, "message": f"识别失败: {str(e)}"}
+
 # ============ HTML界面 ============
-HTML = '''
+HTML = r'''
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -679,25 +757,48 @@ HTML = '''
                     <span style="color:#64748b;font-size:10px;">📝 官方示例：追求卓越不是终点，它需要你每天都<b>&lt;strong&gt;</b>付出<b>&lt;/strong&gt;</b>和<b>&lt;strong&gt;</b>精进<b>&lt;/strong&gt;</b>，最终才能达到巅峰。</span><br>
                     <span style="color:#64748b;font-size:10px;">📝 官方示例：当你用心去倾听一首音乐时<b>[breath]</b>，你会开始注意到那些细微的音符变化<b>[breath]</b>，并通过它们感受到音乐背后的情感。</span>
                 </div>
-                <div class="btn-group">
+                <div class="btn-group" style="display:flex;gap:8px;flex-wrap:wrap;">
                     <button class="btn btn-primary" id="genBtn" onclick="generate()">生成语音</button>
                     <button class="btn btn-secondary" id="aiOptBtn" onclick="aiOptimizeText()">AI优化</button>
+                    <button class="btn btn-secondary" id="sttBtn" onclick="showSTTModal()">🎤 语音识别</button>
+                    <button class="btn btn-secondary" id="davinciConfigBtn" onclick="showDavinciConfig()">⚙️ 达芬奇</button>
+                    <button class="btn btn-secondary" onclick="showApiConfig()">🔑 API设置</button>
                 </div>
                 <div id="genMsg" class="message"></div>
-                <audio id="player" controls style="display:none;"></audio>
                 
-                <!-- 下载链接区域 -->
-                <div id="downloadLinks" style="display:none;margin-top:12px;padding:10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
-                    <div style="font-size:11px;color:#64748b;display:flex;gap:16px;flex-wrap:wrap;">
-                        <span>🎵 <a id="audioDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载音频</a></span>
-                        <span id="srtDownloadWrap" style="display:none;">📄 <a id="srtDownload" href="#" download style="color:#0f172a;text-decoration:none;font-weight:500;">下载字幕</a></span>
+                <!-- 生成结果显示区域 -->
+                <div id="resultArea" style="display:none;margin-top:16px;padding:16px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                    <h3 style="font-size:14px;font-weight:600;margin:0 0 12px 0;color:#0f172a;">📊 生成结果</h3>
+                    
+                    <!-- 音频播放器 -->
+                    <div style="margin-bottom:12px;">
+                        <audio id="player" controls style="width:100%;"></audio>
                     </div>
-                </div>
-                
-                <div style="display:flex;gap:8px;margin-top:8px;">
-                    <button class="btn btn-secondary" id="davinciBtn" onclick="importToDavinci()" style="display:none;">🎬 导入达芬奇</button>
-                    <button class="btn btn-secondary" id="davinciConfigBtn" onclick="showDavinciConfig()" style="font-size:12px;padding:6px 12px;">⚙️ 达芬奇</button>
-                    <button class="btn btn-secondary" onclick="showApiConfig()" style="font-size:12px;padding:6px 12px;">🔑 API设置</button>
+                    
+                    <!-- 识别文本显示 -->
+                    <div id="recognizedTextArea" style="display:none;margin-bottom:12px;">
+                        <label style="font-size:12px;font-weight:500;color:#64748b;display:block;margin-bottom:6px;">识别文本</label>
+                        <div style="padding:10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;line-height:1.6;max-height:120px;overflow-y:auto;" id="recognizedText"></div>
+                    </div>
+                    
+                    <!-- 字幕预览 -->
+                    <div id="subtitlePreviewArea" style="display:none;margin-bottom:12px;">
+                        <label style="font-size:12px;font-weight:500;color:#64748b;display:block;margin-bottom:6px;">字幕预览</label>
+                        <div style="padding:10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;line-height:1.8;max-height:150px;overflow-y:auto;font-family:monospace;" id="subtitlePreview"></div>
+                    </div>
+                    
+                    <!-- 下载按钮 -->
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <a id="audioDownload" href="#" download class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;">
+                            🎵 下载音频
+                        </a>
+                        <a id="srtDownload" href="#" download class="btn btn-secondary" style="text-decoration:none;display:none;align-items:center;gap:4px;">
+                            📄 下载字幕
+                        </a>
+                        <button class="btn btn-secondary" id="davinciBtn" onclick="importToDavinci()" style="display:none;">
+                            🎬 导入达芬奇
+                        </button>
+                    </div>
                 </div>
                 
                 <!-- 达芬奇配置弹窗 -->
@@ -712,6 +813,29 @@ HTML = '''
                         <div style="display:flex;gap:8px;justify-content:flex-end;">
                             <button class="btn btn-secondary" onclick="hideDavinciConfig()">取消</button>
                             <button class="btn btn-primary" onclick="saveDavinciConfig()">保存</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- STT 语音识别弹窗 -->
+                <div id="sttModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+                    <div style="background:#fff;padding:24px;border-radius:12px;max-width:600px;width:90%;">
+                        <h3 style="margin:0 0 16px 0;font-size:16px;">🎤 语音识别 (STT)</h3>
+                        <p style="font-size:13px;color:#64748b;margin-bottom:12px;">上传音频文件，自动识别为文字</p>
+                        <div style="margin-bottom:12px;">
+                            <label style="font-size:12px;color:#64748b;">选择音频文件</label>
+                            <input type="file" id="sttAudioFile" accept="audio/*" style="width:100%;">
+                        </div>
+                        <div id="sttResult" style="display:none;margin-bottom:12px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                            <label style="font-size:12px;color:#64748b;margin-bottom:8px;display:block;">识别结果</label>
+                            <textarea id="sttResultText" style="width:100%;min-height:120px;"></textarea>
+                        </div>
+                        <div id="sttMsg" class="message" style="margin-bottom:12px;"></div>
+                        <div style="display:flex;gap:8px;justify-content:flex-end;">
+                            <button class="btn btn-secondary" onclick="hideSTTModal()">取消</button>
+                            <button class="btn btn-primary" id="sttRecognizeBtn" onclick="recognizeAudio()">开始识别</button>
+                            <button class="btn btn-secondary" id="sttDownloadBtn" onclick="downloadSTTSubtitle()" style="display:none;">📄 下载字幕</button>
+                            <button class="btn btn-primary" id="sttInsertBtn" onclick="insertSTTResult()" style="display:none;">插入文本</button>
                         </div>
                     </div>
                 </div>
@@ -803,6 +927,7 @@ HTML = '''
                             <label>模型</label>
                             <select id="modelSelect" onchange="onModelChange()">
                                 <option value="cosyvoice">CosyVoice2 - 情感控制</option>
+                                <option value="indextts2">IndexTTS-2 - 零样本克隆</option>
                                 <option value="moss">MOSS-TTSD - 长文本</option>
                             </select>
                         </div>
@@ -825,13 +950,13 @@ HTML = '''
                     </div>
 
                     <div class="voice-section">
-                        <div class="section-label">预设声音</div>
-                        <div class="voice-grid" id="presetVoices"></div>
+                        <div class="section-label">我的克隆声音</div>
+                        <div class="voice-grid" id="cloneVoices"></div>
                     </div>
 
                     <div class="voice-section">
-                        <div class="section-label">我的克隆声音</div>
-                        <div class="voice-grid" id="cloneVoices"></div>
+                        <div class="section-label">预设声音</div>
+                        <div class="voice-grid" id="presetVoices"></div>
                     </div>
                 </div>
                 
@@ -841,6 +966,7 @@ HTML = '''
                         <h2 class="card-title" style="margin: 0; font-size: 13px;">🤖 AI优化提示词</h2>
                         <select id="promptType" onchange="switchPromptType()" style="padding:4px 8px;font-size:11px;border-radius:4px;border:1px solid #e2e8f0;">
                             <option value="cosyvoice">CosyVoice2</option>
+                            <option value="indextts2">IndexTTS-2</option>
                             <option value="moss">MOSS-TTSD</option>
                         </select>
                     </div>
@@ -850,6 +976,20 @@ HTML = '''
                         <button class="btn btn-secondary" onclick="savePrompt()" style="padding:4px 10px;font-size:11px;">💾 保存</button>
                     </div>
                     <div id="promptMsg" class="message" style="margin-top:8px;"></div>
+                </div>
+                
+                <!-- AI 分割提示词 -->
+                <div class="card" style="margin-top: 12px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                        <h2 class="card-title" style="margin: 0; font-size: 13px;">✂️ AI字幕分割提示词</h2>
+                        <span id="splitModelName" style="font-size:10px;color:#94a3b8;">模型: 加载中...</span>
+                    </div>
+                    <textarea id="splitPrompt" style="min-height:120px;font-size:11px;line-height:1.5;font-family:monospace;"></textarea>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+                        <span style="font-size:10px;color:#94a3b8;">生成字幕时自动调用，将文本分割成短句</span>
+                        <button class="btn btn-secondary" onclick="saveSplitPrompt()" style="padding:4px 10px;font-size:11px;">💾 保存</button>
+                    </div>
+                    <div id="splitPromptMsg" class="message" style="margin-top:8px;"></div>
                 </div>
             </div>
         </div>
@@ -933,26 +1073,58 @@ HTML = '''
 5. 情感指令只能放最开头！
 
 直接输出优化后的文本，不要解释。`,
+            indextts2: `你是一位资深配音导演，正在为 IndexTTS-2 语音合成优化文本。IndexTTS-2 擅长零样本声音克隆和自然情感表达。
+
+【IndexTTS-2 的特点】
+- 不支持细粒度标记（没有 [breath]、[laughter] 等）
+- 自动识别标点符号控制节奏和停顿
+- 自然情感表达能力强，无需特殊标记
+- 适合长文本合成
+
+【你的工作流程】
+1. 通读全文，理解情感基调
+2. 调整标点符号，控制说话节奏：
+   - 逗号：短停顿
+   - 句号：正常停顿
+   - 感叹号：情绪强烈
+   - 问号：疑问语气
+   - 省略号：思考、犹豫
+3. 删除所有空格
+4. 避免过长句子（每句不超过30字）
+
+【重要规则】
+1. 不要添加任何特殊标记！
+2. 只用标点符号控制节奏
+3. 删除所有空格
+4. 保持文本自然流畅
+
+直接输出优化后的文本，不要解释。`,
             moss: `你是专业配音演员和语音导演。任务：深度分析文本，添加语气标记让语音更自然生动。
+
+【MOSS-TTSD 专用标记】
+- [laughter] 笑声：开心、幽默、自嘲处
+- [breath] 呼吸停顿：思考、转折、情绪酝酿处
+- [S1] [S2] 说话人切换：对话场景（MOSS 支持双人对话）
 
 【格式要求】
 - 删除所有空格（官方要求）
 - 标点符号正常使用
-
-【可用标记】
-- [laughter] 笑声：开心、幽默、自嘲处
-- [breath] 呼吸停顿：思考、转折、情绪酝酿处
-- [S1] [S2] 说话人切换：对话场景
+- 如果是对话，用 [S1] 和 [S2] 标记不同说话人
 
 【示例】
 原文：今天真是太开心了，终于放假了
 优化：[breath]今天真是太开心了，[laughter]终于放假了
 
+对话示例：
+原文：你好吗？我很好，谢谢！
+优化：[S1]你好吗？[S2]我很好，谢谢！
+
 直接返回优化后的文本，不要任何解释。`
         };
         
         // 用户保存的提示词
-        let savedPrompts = { cosyvoice: '', moss: '' };
+        let savedPrompts = { cosyvoice: '', indextts2: '', moss: '' };
+        let savedSplitPrompt = '';  // AI 分割提示词
         
         async function loadSavedPrompts() {
             try {
@@ -963,7 +1135,17 @@ HTML = '''
                     // 合并而不是覆盖
                     if (data.prompts.cosyvoice) savedPrompts.cosyvoice = data.prompts.cosyvoice;
                     if (data.prompts.moss) savedPrompts.moss = data.prompts.moss;
+                    if (data.prompts.indextts2) savedPrompts.indextts2 = data.prompts.indextts2;
+                    if (data.prompts.split) {
+                        savedSplitPrompt = data.prompts.split;
+                        document.getElementById('splitPrompt').value = savedSplitPrompt;
+                    }
                     console.log('加载的提示词:', savedPrompts);
+                }
+                
+                // 加载 AI 分割模型名称
+                if (data.config && data.config.llm_split && data.config.llm_split.model) {
+                    document.getElementById('splitModelName').textContent = '模型: ' + data.config.llm_split.model;
                 }
             } catch(e) {
                 console.error('加载提示词失败:', e);
@@ -1000,58 +1182,122 @@ HTML = '''
             }
         }
         
+        async function saveSplitPrompt() {
+            const prompt = document.getElementById('splitPrompt').value;
+            const msgDiv = document.getElementById('splitPromptMsg');
+            
+            try {
+                const res = await fetch('/api/prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'split', prompt })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    savedSplitPrompt = prompt;
+                    showMsg(msgDiv, '✅ 已保存', true);
+                } else {
+                    showMsg(msgDiv, '保存失败: ' + data.message, false);
+                }
+            } catch(e) {
+                showMsg(msgDiv, '保存失败: ' + e, false);
+            }
+        }
+        
         function resetPrompt() {
             const type = document.getElementById('promptType').value;
             document.getElementById('systemPrompt').value = DEFAULT_PROMPTS[type];
         }
 
         async function loadVoices() {
+            console.log('[DEBUG] 开始加载声音列表...');
             try {
                 // 先加载保存的提示词
                 await loadSavedPrompts();
                 
+                console.log('[DEBUG] 请求 /api/voices...');
                 const res = await fetch('/api/voices');
                 const data = await res.json();
-                voiceList = data.clones || [];
+                console.log('[DEBUG] 收到数据:', data);
+                
+                // 保存所有音色数据
+                window.cosyvoiceClones = data.clones || [];
+                window.indextts2Clones = data.indextts2_clones || [];
+                
+                console.log('[DEBUG] CosyVoice2 音色数量:', window.cosyvoiceClones.length);
+                console.log('[DEBUG] IndexTTS-2 音色数量:', window.indextts2Clones.length);
+                console.log('[DEBUG] 预设声音数量:', (data.presets || []).length);
 
-                const cloneDiv = document.getElementById('cloneVoices');
-                const presetDiv = document.getElementById('presetVoices');
-                const delSelect = document.getElementById('delSelect');
-
-                cloneDiv.innerHTML = '';
-                presetDiv.innerHTML = '';
+                // 保存预设音色
+                window.presets = data.presets || [];
+                
+                // 根据当前选择的模型显示对应的音色
+                updateVoiceList();
+                
+                console.log('[DEBUG] 声音加载完成！');
+                
+                // 初始化提示词
+                switchPromptType();
+            } catch(e) {
+                console.error('[ERROR] 加载失败:', e);
+                alert('加载声音失败: ' + e.message);
+            }
+        }
+        
+        function updateVoiceList() {
+            // 获取当前选择的模型
+            const modelSelect = document.getElementById('modelSelect');
+            const currentModel = modelSelect ? modelSelect.value : 'cosyvoice';
+            
+            console.log('[DEBUG] 当前模型:', currentModel);
+            
+            // 根据模型选择对应的音色列表
+            let voiceList = [];
+            if (currentModel === 'indextts2') {
+                voiceList = window.indextts2Clones || [];
+            } else {
+                voiceList = window.cosyvoiceClones || [];
+            }
+            
+            console.log('[DEBUG] 显示音色数量:', voiceList.length);
+            
+            const cloneDiv = document.getElementById('cloneVoices');
+            const presetDiv = document.getElementById('presetVoices');
+            const delSelect = document.getElementById('delSelect');
+            
+            cloneDiv.innerHTML = '';
+            presetDiv.innerHTML = '';
+            if (delSelect) {
                 delSelect.innerHTML = '<option value="">-- 选择 --</option>';
+            }
 
-                if (voiceList.length === 0) {
-                    cloneDiv.innerHTML = '<div class="empty">还没有克隆声音，请先上传</div>';
-                }
-
-                voiceList.forEach(v => {
+            if (voiceList.length === 0) {
+                cloneDiv.innerHTML = '<div class="empty">还没有克隆声音，请先上传</div>';
+            } else {
+                voiceList.forEach((v, index) => {
                     const div = document.createElement('div');
                     div.className = 'voice-btn clone';
                     div.innerHTML = `<span class="voice-badge">云</span>${v.customName || v.name}`;
                     div.onclick = () => selectVoice('clone', v.uri, v.customName || v.name, div);
                     cloneDiv.appendChild(div);
 
-                    const opt = document.createElement('option');
-                    opt.value = v.uri;
-                    opt.textContent = v.customName || v.name;
-                    delSelect.appendChild(opt);
+                    if (delSelect) {
+                        const opt = document.createElement('option');
+                        opt.value = v.uri;
+                        opt.textContent = v.customName || v.name;
+                        delSelect.appendChild(opt);
+                    }
                 });
-
-                (data.presets || []).forEach(name => {
-                    const div = document.createElement('div');
-                    div.className = 'voice-btn preset';
-                    div.textContent = name;
-                    div.onclick = () => selectVoice('preset', name, name, div);
-                    presetDiv.appendChild(div);
-                });
-                
-                // 初始化提示词
-                switchPromptType();
-            } catch(e) {
-                console.error('加载失败:', e);
             }
+
+            const presets = window.presets || [];
+            presets.forEach((name, index) => {
+                const div = document.createElement('div');
+                div.className = 'voice-btn preset';
+                div.textContent = name;
+                div.onclick = () => selectVoice('preset', name, name, div);
+                presetDiv.appendChild(div);
+            });
         }
 
         function selectVoice(type, value, name, el) {
@@ -1066,6 +1312,9 @@ HTML = '''
             const name = document.getElementById('voiceName').value.trim();
             const msgDiv = document.getElementById('saveMsg');
             const btn = document.getElementById('uploadBtn');
+            
+            // 获取当前选择的模型
+            const currentModel = document.getElementById('modelSelect').value;
 
             if (!file) { showMsg(msgDiv, '请选择音频文件', false); return; }
             if (!refText) { showMsg(msgDiv, '请输入参考音频中说的话', false); return; }
@@ -1079,6 +1328,7 @@ HTML = '''
             form.append('audio', file);
             form.append('text', refText);
             form.append('name', name);
+            form.append('model', currentModel);  // 传递当前选择的模型
 
             try {
                 const res = await fetch('/api/upload', { method: 'POST', body: form });
@@ -1103,6 +1353,7 @@ HTML = '''
             const model = document.getElementById('modelSelect').value;
             const msgDiv = document.getElementById('genMsg');
             const btn = document.getElementById('genBtn');
+            const resultArea = document.getElementById('resultArea');
             const player = document.getElementById('player');
 
             if (!selectedVoice) { showMsg(msgDiv, '请先选择一个声音', false); return; }
@@ -1111,7 +1362,7 @@ HTML = '''
             btn.disabled = true;
             btn.innerHTML = '生成中... <span class="spinner"></span>';
             msgDiv.className = 'message';
-            player.style.display = 'none';
+            resultArea.style.display = 'none';
 
             try {
                 const res = await fetch('/api/tts', {
@@ -1128,31 +1379,55 @@ HTML = '''
                 const data = await res.json();
                 showMsg(msgDiv, data.message, data.success);
                 if (data.success) {
+                    // 显示结果区域
+                    resultArea.style.display = 'block';
+                    
+                    // 设置音频播放器
                     player.src = data.audio_url + '?t=' + Date.now();
-                    player.style.display = 'block';
                     player.play();
                     
-                    // 显示下载链接
-                    const linksDiv = document.getElementById('downloadLinks');
-                    const audioLink = document.getElementById('audioDownload');
-                    const srtLink = document.getElementById('srtDownload');
-                    const srtWrap = document.getElementById('srtDownloadWrap');
+                    // 显示识别文本（如果有）
+                    const recognizedTextArea = document.getElementById('recognizedTextArea');
+                    const recognizedText = document.getElementById('recognizedText');
+                    if (data.recognized_text) {
+                        recognizedText.textContent = data.recognized_text;
+                        recognizedTextArea.style.display = 'block';
+                    } else {
+                        recognizedTextArea.style.display = 'none';
+                    }
+                    
+                    // 显示字幕预览
+                    const subtitlePreviewArea = document.getElementById('subtitlePreviewArea');
+                    const subtitlePreview = document.getElementById('subtitlePreview');
+                    if (data.segments && data.segments.length > 0) {
+                        let srtContent = '';
+                        data.segments.forEach((seg, i) => {
+                            srtContent += `${i + 1}\\n`;
+                            srtContent += `${formatSrtTime(seg.start)} --> ${formatSrtTime(seg.end)}\\n`;
+                            srtContent += `${seg.text}\\n\\n`;
+                        });
+                        subtitlePreview.textContent = srtContent;
+                        subtitlePreviewArea.style.display = 'block';
+                    } else {
+                        subtitlePreviewArea.style.display = 'none';
+                    }
                     
                     // 设置下载链接
+                    const audioLink = document.getElementById('audioDownload');
+                    const srtLink = document.getElementById('srtDownload');
+                    
                     audioLink.href = data.audio_url;
                     audioLink.download = data.audio_url.split('/').pop();
                     
                     if (data.srt_url) {
                         srtLink.href = data.srt_url;
                         srtLink.download = data.srt_url.split('/').pop();
-                        srtWrap.style.display = 'inline';
+                        srtLink.style.display = 'inline-flex';
                     } else {
-                        srtWrap.style.display = 'none';
+                        srtLink.style.display = 'none';
                     }
                     
-                    linksDiv.style.display = 'block';
-                    
-                    // 保存音频、字幕文件名和segments数据，显示达芬奇按钮
+                    // 保存数据，显示达芬奇按钮
                     window.lastAudioFile = data.audio_url.split('/').pop();
                     window.lastSrtFile = data.srt_url ? data.srt_url.split('/').pop() : null;
                     window.lastJsonFile = data.json_url ? data.json_url.split('/').pop() : null;
@@ -1166,15 +1441,37 @@ HTML = '''
                 btn.innerHTML = '生成语音';
             }
         }
+        
+        function formatSrtTime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 1000);
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+        }
 
         function onModelChange() {
             const model = document.getElementById('modelSelect').value;
             const tip = document.querySelector('.tip');
+            const promptType = document.getElementById('promptType');
+            
+            // 根据模型自动切换提示词类型
             if (model === 'moss') {
-                tip.innerHTML = 'MOSS-TTSD 专为长文本设计，稳定输出，支持超长文本一次性生成';
-            } else {
-                tip.innerHTML = '支持情感控制：用开心的语气说<|endofprompt|>今天真开心！';
+                tip.innerHTML = 'MOSS-TTSD 专为长文本设计，支持双人对话 [S1] [S2]';
+                promptType.value = 'moss';
+            } else if (model === 'indextts2') {
+                tip.innerHTML = 'IndexTTS-2 零样本语音克隆，情感表达自然';
+                promptType.value = 'indextts2';
+            } else {  // cosyvoice
+                tip.innerHTML = '支持情感控制：用开心的语气说&lt;|endofprompt|&gt;今天真开心！';
+                promptType.value = 'cosyvoice';
             }
+            
+            // 切换提示词内容
+            switchPromptType();
+            
+            // 更新音色列表（显示对应模型的音色）
+            updateVoiceList();
         }
 
         async function deleteVoice() {
@@ -1276,8 +1573,6 @@ HTML = '''
                 btn.innerHTML = 'AI优化';
             }
         }
-
-        loadVoices();
 
         // 导入到达芬奇 - 音频+字幕一起导入并对齐
         async function importToDavinci() {
@@ -1418,6 +1713,140 @@ HTML = '''
                 showMsg(msgDiv, '保存失败: ' + e, false);
             }
         }
+        
+        // ============ STT 语音识别功能 ============
+        function showSTTModal() {
+            document.getElementById('sttModal').style.display = 'flex';
+            document.getElementById('sttResult').style.display = 'none';
+            document.getElementById('sttResultText').value = '';
+            document.getElementById('sttInsertBtn').style.display = 'none';
+            document.getElementById('sttDownloadBtn').style.display = 'none';
+            document.getElementById('sttAudioFile').value = '';
+            hideMsg(document.getElementById('sttMsg'));
+            window.sttSegments = null; // 清除之前的字幕数据
+        }
+        
+        function hideSTTModal() {
+            document.getElementById('sttModal').style.display = 'none';
+        }
+        
+        async function recognizeAudio() {
+            const fileInput = document.getElementById('sttAudioFile');
+            const btn = document.getElementById('sttRecognizeBtn');
+            const msgDiv = document.getElementById('sttMsg');
+            
+            if (!fileInput.files || !fileInput.files[0]) {
+                showMsg(msgDiv, '请先选择音频文件', false);
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const fileSizeMB = (file.size / 1024 / 1024).toFixed(2);
+            
+            const formData = new FormData();
+            formData.append('audio', file);
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> 识别中...';
+            
+            // 显示提示 - 大文件需要更长时间
+            if (file.size > 1 * 1024 * 1024) {
+                showMsg(msgDiv, `文件 ${fileSizeMB} MB，识别中，请耐心等待（可能需要1-2分钟）...`, true);
+            } else {
+                hideMsg(msgDiv);
+            }
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000); // 120秒超时
+                
+                const res = await fetch('/api/stt', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                const data = await res.json();
+                
+                if (data.success) {
+                    document.getElementById('sttResultText').value = data.text;
+                    document.getElementById('sttResult').style.display = 'block';
+                    document.getElementById('sttInsertBtn').style.display = 'inline-flex';
+                    document.getElementById('sttDownloadBtn').style.display = 'inline-flex';
+                    window.sttSegments = data.segments; // 保存字幕数据
+                    showMsg(msgDiv, `识别成功！语言: ${data.language || '未知'}, 时长: ${data.duration ? data.duration.toFixed(1) + '秒' : '未知'}`, true);
+                } else {
+                    showMsg(msgDiv, data.message || '识别失败', false);
+                }
+            } catch(e) {
+                if (e.name === 'AbortError') {
+                    showMsg(msgDiv, '识别超时（超过2分钟），请使用较短的音频文件', false);
+                } else {
+                    showMsg(msgDiv, '识别失败: ' + e, false);
+                }
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '开始识别';
+            }
+        }
+        
+        function insertSTTResult() {
+            const text = document.getElementById('sttResultText').value;
+            if (text) {
+                document.getElementById('ttsText').value = text;
+                hideSTTModal();
+            }
+        }
+        
+        function downloadSTTSubtitle() {
+            if (!window.sttSegments || window.sttSegments.length === 0) {
+                alert('没有字幕数据');
+                return;
+            }
+            
+            // 生成 SRT 格式字幕
+            let srt = '';
+            window.sttSegments.forEach((seg, index) => {
+                const startTime = formatSRTTime(seg.start);
+                const endTime = formatSRTTime(seg.end);
+                srt += `${index + 1}\n${startTime} --> ${endTime}\n${seg.text}\n\n`;
+            });
+            
+            // 下载文件
+            const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `字幕_${new Date().getTime()}.srt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        function formatSRTTime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 1000);
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+        }
+        
+        // 页面加载时自动加载声音列表
+        console.log('[DEBUG] 脚本开始执行...');
+        
+        window.addEventListener('DOMContentLoaded', function() {
+            console.log('[DEBUG] DOMContentLoaded 事件触发！');
+            console.log('[DEBUG] 页面加载完成，开始加载声音...');
+            loadVoices();
+        });
+        
+        // 备用：如果 DOMContentLoaded 已经触发过了，直接加载
+        if (document.readyState === 'loading') {
+            console.log('[DEBUG] 文档正在加载中，等待 DOMContentLoaded...');
+        } else {
+            console.log('[DEBUG] 文档已加载完成，立即加载声音...');
+            loadVoices();
+        }
     </script>
 </body>
 </html>
@@ -1429,14 +1858,35 @@ def index():
 
 @app.route('/api/voices')
 def api_voices():
-    """获取所有声音（从服务器获取）"""
+    """获取所有声音（从服务器获取），按模型分类"""
     try:
         server_voices = get_server_voices()
-        clones = server_voices.get("result", [])
-        return jsonify({"clones": clones, "presets": PRESETS})
+        all_clones = server_voices.get("result", [])
+        
+        # 按模型分类音色
+        cosyvoice_clones = []
+        indextts2_clones = []
+        
+        for voice in all_clones:
+            uri = voice.get('uri', '')
+            # 根据 customName 判断模型（上传时的命名规则）
+            custom_name = voice.get('customName', '')
+            
+            # IndexTTS-2 的音色包含 "index" 关键字
+            if 'index' in custom_name.lower():
+                indextts2_clones.append(voice)
+            else:
+                # 默认是 CosyVoice2
+                cosyvoice_clones.append(voice)
+        
+        return jsonify({
+            "clones": cosyvoice_clones,  # CosyVoice2 音色
+            "indextts2_clones": indextts2_clones,  # IndexTTS-2 音色
+            "presets": PRESETS
+        })
     except Exception as e:
         print(f"[ERROR] /api/voices: {e}")
-        return jsonify({"clones": [], "presets": PRESETS})
+        return jsonify({"clones": [], "indextts2_clones": [], "presets": PRESETS})
 
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
@@ -1445,6 +1895,7 @@ def api_upload():
         file = request.files.get('audio')
         name = request.form.get('name', '').strip()
         ref_text = request.form.get('text', '').strip()
+        model_type = request.form.get('model', 'cosyvoice').strip()  # 获取模型类型
         
         if not file:
             return jsonify({"success": False, "message": "请上传音频文件"})
@@ -1453,13 +1904,19 @@ def api_upload():
         if not ref_text:
             return jsonify({"success": False, "message": "请输入参考音频中说的话"})
         
+        # 根据模型类型设置模型名称
+        if model_type == 'indextts2':
+            tts_model = 'IndexTeam/IndexTTS-2'
+        else:  # cosyvoice 或 moss（都用 CosyVoice2）
+            tts_model = 'FunAudioLLM/CosyVoice2-0.5B'
+        
         # 保存临时文件
         temp_path = BASE_DIR / f"_temp_{name}{Path(file.filename).suffix}"
         file.save(str(temp_path))
         
-        # 上传到服务器
-        print(f"[INFO] 上传声音到服务器: {name}")
-        success, uri, result = upload_voice_to_server(str(temp_path), name, ref_text)
+        # 上传到服务器，指定模型
+        print(f"[INFO] 上传声音到服务器: {name}，模型: {tts_model}")
+        success, uri, result = upload_voice_to_server(str(temp_path), name, ref_text, tts_model)
         
         # 删除临时文件
         if temp_path.exists():
@@ -1580,15 +2037,19 @@ def ai_split_text(text, max_chars=15):
     llm_config = config['llm_split']
     api_key = llm_config.get('api_key') or config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
     base_url = llm_config.get('base_url', 'https://api.siliconflow.cn/v1')
-    model = llm_config.get('model', 'Pro/zai-org/GLM-4.7')
+    model = llm_config.get('model', 'tencent/Hunyuan-A13B-Instruct')
     
-    try:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        prompt = f"""你是专业的视频后期剪辑师，精通字幕制作。请将文本分割成适合视频字幕的短句。
+    # 获取用户保存的提示词，如果没有则使用默认提示词
+    saved_prompt = config.get('prompts', {}).get('split', '')
+    
+    if saved_prompt:
+        # 使用用户保存的提示词
+        system_prompt = "你是专业视频剪辑师，擅长字幕分割。直接输出分割结果，不要解释。"
+        user_prompt = saved_prompt + f"\n\n文本：{clean_text}"
+    else:
+        # 使用默认提示词
+        system_prompt = "你是专业视频剪辑师，擅长字幕分割。直接输出分割结果，不要解释。"
+        user_prompt = f"""你是专业的视频后期剪辑师，精通字幕制作。请将文本分割成适合视频字幕的短句。
 
 【你的专业视角】
 - 字幕是观众阅读的，要符合阅读节奏
@@ -1601,17 +2062,22 @@ def ai_split_text(text, max_chars=15):
 3. 保持词语完整，不拆分词组
 4. 重点词汇（如关键名词、动作）可以单独一句
 
-
 【输出】
 每行一句，不加序号
 
 文本：{clean_text}"""
-
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是专业视频剪辑师，擅长字幕分割。直接输出分割结果，不要解释。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.1,
             "max_tokens": 2000
@@ -1702,7 +2168,17 @@ def api_tts():
         tts_config = config['tts']
         api_key = tts_config.get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
         base_url = tts_config.get('base_url', 'https://api.siliconflow.cn/v1')
-        tts_model = tts_config.get('model', 'FunAudioLLM/CosyVoice2-0.5B')
+        
+        # 根据用户选择的模型类型，设置对应的模型名称
+        if model_type == 'moss':
+            tts_model = 'fnlp/MOSS-TTSD-v0.5'
+        elif model_type == 'indextts2':
+            tts_model = 'IndexTeam/IndexTTS-2'
+            print("[INFO] 使用 IndexTTS-2 模型")
+        else:  # cosyvoice
+            tts_model = 'FunAudioLLM/CosyVoice2-0.5B'
+        
+        print(f"[INFO] 使用模型: {tts_model}")
         
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1717,14 +2193,19 @@ def api_tts():
         
         # ========== 第1步：一次性生成完整音频 ==========
         print(f"[INFO] 生成音频: {text[:50]}...")
+        
+        # 所有模型统一使用 voice 参数（IndexTTS-2 也支持！）
         payload = {
             "model": tts_model,
             "input": text,
             "voice": voice,
             "response_format": "mp3",
             "sample_rate": 32000,
-            "speed": speed
+            "speed": speed,
+            "max_tokens": 2048
         }
+        
+        print(f"[DEBUG] Payload: model={payload['model']}, voice={payload['voice'][:50]}...")
         
         resp = requests.post(
             f"{base_url}/audio/speech",
@@ -1874,16 +2355,8 @@ def whisper_transcribe(audio_path):
 def whisper_get_timestamps(audio_path):
     """用Whisper获取segment级别时间戳（更准确）"""
     try:
-        from faster_whisper import WhisperModel
-        
-        model_dir = BASE_DIR / "models"
-        local_model_path = model_dir / "faster-whisper-small"
-        
-        print("[INFO] 加载Whisper模型(faster-whisper-small)...")
-        if local_model_path.exists() and (local_model_path / "model.bin").exists():
-            model = WhisperModel(str(local_model_path), device="cpu", compute_type="int8")
-        else:
-            print("[ERROR] 模型文件不存在")
+        model = get_whisper_model()
+        if model is None:
             return None
         
         segments, info = model.transcribe(
@@ -2068,6 +2541,50 @@ def api_delete():
             return jsonify({"success": False, "message": "删除失败"})
     except Exception as e:
         return jsonify({"success": False, "message": f"删除失败: {e}"})
+
+@app.route('/api/stt', methods=['POST'])
+def api_stt():
+    """语音转文字 - STT识别"""
+    try:
+        print("[INFO] STT API 被调用")
+        
+        if 'audio' not in request.files:
+            print("[ERROR] 未找到音频文件")
+            return jsonify({"success": False, "message": "未上传音频文件"})
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            print("[ERROR] 文件名为空")
+            return jsonify({"success": False, "message": "文件名为空"})
+        
+        print(f"[INFO] 收到音频文件: {audio_file.filename}")
+        
+        # 保存临时文件 - 保持原始扩展名
+        import os
+        ext = os.path.splitext(audio_file.filename)[1] or '.wav'
+        temp_path = OUTPUT_DIR / f"stt_temp_{int(time.time())}{ext}"
+        audio_file.save(temp_path)
+        print(f"[INFO] 临时文件保存到: {temp_path}")
+        
+        # 执行识别
+        print("[INFO] 开始识别...")
+        result = stt_transcribe(temp_path)
+        print(f"[INFO] 识别结果: {result}")
+        
+        # 删除临时文件
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+                print("[INFO] 临时文件已删除")
+        except Exception as e:
+            print(f"[WARN] 删除临时文件失败: {e}")
+        
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] STT API 错误: {error_detail}")
+        return jsonify({"success": False, "message": f"识别失败: {e}"})
 
 # ============ 达芬奇集成 ============
 DAVINCI_CONFIG_FILE = BASE_DIR / "davinci_config.json"
@@ -2531,10 +3048,18 @@ def api_ai_optimize():
 # ============ 提示词API ============
 @app.route('/api/prompts', methods=['GET'])
 def get_prompts():
-    """获取保存的提示词"""
+    """获取保存的提示词和配置信息"""
     config = get_config()
     prompts = config.get('prompts', {})
-    return jsonify({"success": True, "prompts": prompts})
+    # 返回配置信息，包括 llm_split 模型名称
+    return jsonify({
+        "success": True, 
+        "prompts": prompts,
+        "config": {
+            "llm_split": config.get('llm_split', {}),
+            "llm_optimize": config.get('llm_optimize', {})
+        }
+    })
 
 @app.route('/api/prompts', methods=['POST'])
 def save_prompts():
@@ -2628,19 +3153,19 @@ def save_api_config():
 if __name__ == "__main__":
     config = get_config()
     tts_key = config['tts'].get('api_key') or LEGACY_CONFIG.get('siliconflow_api_key', '')
-    
+
     print("=" * 60)
-    print("🎙️  声音克隆工具 - SiliconFlow CosyVoice2")
+    print("Sound Clone Tool - SiliconFlow CosyVoice2")
     print("=" * 60)
-    print(f"TTS API Key: {'✅ 已配置' if tts_key else '❌ 未配置!'}")
-    print(f"输出目录: {OUTPUT_DIR}")
+    print(f"TTS API Key: {'Configured' if tts_key else 'Not configured!'}")
+    print(f"Output directory: {OUTPUT_DIR}")
     print("=" * 60)
-    print("📌 使用说明：")
-    print("   1. 上传 8-10秒 清晰人声音频")
-    print("   2. 必须准确填写音频中说的话")
-    print("   3. 音频会上传到SiliconFlow服务器保存")
-    print("   4. 使用服务器预置音色，效果更好更稳定")
+    print("Instructions:")
+    print("   1. Upload 8-10 seconds of clean human voice audio")
+    print("   2. You must accurately fill in what is said in the audio")
+    print("   3. The audio will be uploaded to SiliconFlow server for storage")
+    print("   4. Using server-side preset voices gives better and more stable results")
     print("=" * 60)
-    print("🌐 访问: http://localhost:7860")
+    print("Access at: http://localhost:7860")
     print("=" * 60)
     app.run(host="0.0.0.0", port=7860, debug=False)

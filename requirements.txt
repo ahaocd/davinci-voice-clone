@@ -1,16 +1,46 @@
 # Voice Clone Studio Dependencies
 # Python 3.8+ required
 
+# ============================================
+# 核心依赖（必需）
+# ============================================
+
 # Web Framework
-flask>=2.0.0
-flask-cors>=3.0.0
+flask>=2.0.0              # Web 服务器
+flask-cors>=3.0.0         # 跨域支持
 
 # HTTP Requests
-requests>=2.25.0
+requests>=2.25.0          # API 调用
 
-# Audio Processing (MP3 duration)
-mutagen>=1.45.0
+# Audio Processing
+mutagen>=1.45.0           # MP3 元数据处理（获取音频时长）
+
+# ============================================
+# AI 模型依赖
+# ============================================
 
 # Whisper STT (for subtitle timestamps)
-# Downloads ~100MB of dependencies (onnxruntime, ctranslate2, numpy)
-faster-whisper>=0.9.0
+# 自动下载依赖: onnxruntime, ctranslate2, numpy (~100MB)
+faster-whisper>=0.9.0     # 语音识别（字幕时间戳）
+
+# ============================================
+# 可选依赖
+# ============================================
+
+# 繁简转换（可选，用于 STT 识别结果转换）
+# opencc-python-reimplemented>=0.1.0
+
+# ============================================
+# 说明
+# ============================================
+# 
+# TTS 模型通过 API 调用，无需本地安装：
+# - CosyVoice2: FunAudioLLM/CosyVoice2-0.5B
+# - IndexTTS-2: IndexTeam/IndexTTS-2
+# - MOSS-TTSD: fnlp/MOSS-TTSD-v0.5
+#
+# Whisper 模型会在首次使用时自动下载到：
+# voice_clones/models/faster-whisper-small/
+#
+# 推荐使用 small 模型（244MB）平衡速度和准确度
+#
