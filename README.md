@@ -60,22 +60,24 @@ DaVinci Resolve 字幕自动对齐工具，集成多模型 TTS 声音克隆和 A
 **Windows**
 ```bash
 # 双击运行（自动安装依赖）
-start.bat
+启动.bat
 ```
 
 **Linux/Mac**
 ```bash
-# 赋予执行权限并运行
-chmod +x start.sh && ./start.sh
+# 命令行运行
+python3 -m venv venv
+source venv/bin/activate  # Mac/Linux
+pip install flask flask-cors requests mutagen faster-whisper
+python voice_clone_flask.py
 ```
 
-启动脚本会自动：
+**首次运行会自动：**
 1. ✅ 检查 Python 环境
-2. ✅ 创建虚拟环境（venv）
+2. ✅ 创建虚拟环境
 3. ✅ 安装所有依赖
 4. ✅ 创建必要目录
-5. ✅ 检查 Whisper 模型
-6. ✅ 启动服务器
+5. ✅ 启动服务器
 
 访问: http://localhost:7860
 
