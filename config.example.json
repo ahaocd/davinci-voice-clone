@@ -33,8 +33,11 @@
     "comment": "AI 优化提示词使用的大模型（推荐 Kimi 或 Hunyuan-A13B）"
   },
   "whisper": {
-    "model_size": "small",
-    "comment": "Whisper 模型大小: tiny(39MB), base(74MB), small(244MB), medium(769MB), large(1550MB)"
+    "model": "medium",
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "zh",
+    "comment": "Whisper 语音识别模型。可选: tiny(39M), base(74M), small(244M), medium(769M), large(1550M)。推荐 medium 以获得更好的中文识别准确率和简繁体识别"
   },
   "max_subtitle_chars": 15,
   "subtitle": {

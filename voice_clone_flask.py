@@ -107,17 +107,38 @@ def get_whisper_model():
     try:
         from faster_whisper import WhisperModel
         
+        # 从配置文件读取 Whisper 设置
+        config = get_config()
+        whisper_config = config.get('whisper', {})
+        model_size = whisper_config.get('model', 'small')  # 默认 small
+        device = whisper_config.get('device', 'cpu')
+        compute_type = whisper_config.get('compute_type', 'int8')
+        language = whisper_config.get('language', 'zh')
+        
         model_dir = BASE_DIR / "models"
-        local_model_path = model_dir / "faster-whisper-small"
+        local_model_path = model_dir / f"faster-whisper-{model_size}"
         
         if local_model_path.exists() and (local_model_path / "model.bin").exists():
-            print("[INFO] 首次加载 Whisper 模型(faster-whisper-small)...")
-            WHISPER_MODEL = WhisperModel(str(local_model_path), device="cpu", compute_type="int8")
-            print("[INFO] Whisper 模型加载完成！后续调用将直接使用缓存")
+            print(f"[INFO] 首次加载 Whisper 模型(faster-whisper-{model_size})...")
+            WHISPER_MODEL = WhisperModel(
+                str(local_model_path), 
+                device=device, 
+                compute_type=compute_type
+            )
+            print(f"[INFO] Whisper 模型加载完成！设备={device}, 精度={compute_type}, 语言={language}")
+            print("[INFO] 后续调用将直接使用缓存")
             return WHISPER_MODEL
         else:
-            print("[ERROR] Whisper 模型文件不存在")
-            return None
+            print(f"[WARN] 本地模型不存在: {local_model_path}")
+            print(f"[INFO] 自动下载 Whisper {model_size} 模型...")
+            WHISPER_MODEL = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=compute_type,
+                download_root=str(model_dir)
+            )
+            print(f"[INFO] Whisper 模型下载并加载完成！")
+            return WHISPER_MODEL
     except Exception as e:
         print(f"[ERROR] 加载 Whisper 模型失败: {e}")
         return None
@@ -2288,38 +2309,42 @@ def whisper_transcribe(audio_path):
     try:
         from faster_whisper import WhisperModel
         
-        max_chars = TOOL_CONFIG.get('max_subtitle_chars', 15)
+        # 从配置文件读取设置
+        config = get_config()
+        whisper_config = config.get('whisper', {})
+        model_size = whisper_config.get('model', 'small')
+        device = whisper_config.get('device', 'cpu')
+        compute_type = whisper_config.get('compute_type', 'int8')
+        language = whisper_config.get('language', 'zh')
+        max_chars = config.get('max_subtitle_chars', 15)
         
-        # 模型下载到项目目录，不是C盘
+        # 模型下载到项目目录
         model_dir = BASE_DIR / "models"
         model_dir.mkdir(exist_ok=True)
+        local_model_path = model_dir / f"faster-whisper-{model_size}"
         
-        # 检查本地模型是否存在
-        local_model_path = model_dir / "faster-whisper-small"
-        
-        print("[INFO] 加载Whisper模型...")
+        print(f"[INFO] 加载Whisper模型({model_size})...")
         if local_model_path.exists() and (local_model_path / "model.bin").exists():
-            # 使用本地下载的模型
             model = WhisperModel(
                 str(local_model_path),
-                device="cpu",
-                compute_type="int8"
+                device=device,
+                compute_type=compute_type
             )
         else:
-            # 自动下载（需要网络）
+            print(f"[INFO] 自动下载 {model_size} 模型...")
             model = WhisperModel(
-                "small",
-                device="cpu",
-                compute_type="int8",
+                model_size,
+                device=device,
+                compute_type=compute_type,
                 download_root=str(model_dir)
             )
         
         print(f"[INFO] Whisper识别: {audio_path}")
         segments, info = model.transcribe(
             audio_path,
-            language="zh",
-            word_timestamps=True,  # 获取每个词的时间戳
-            vad_filter=True  # 过滤静音
+            language=language,
+            word_timestamps=True,
+            vad_filter=True
         )
         
         # 收集所有词和时间戳

@@ -81,22 +81,55 @@ python voice_clone_flask.py
 
 访问: http://localhost:7860
 
-### Whisper 模型下载
+### Whisper 模型选择
 
-**推荐：small 模型（244MB）**
+**默认：medium 模型（769MB）** - 推荐
 
-平衡速度和准确度，适合大多数场景。
+| 模型 | 大小 | 内存 | 速度 | 准确率 | 简繁体识别 | 推荐场景 |
+|------|------|------|------|--------|-----------|---------|
+| tiny | 39M | ~1GB | 10x | ⭐ | ❌ 经常出错 | 测试用 |
+| base | 74M | ~1GB | 7x | ⭐⭐ | ❌ 经常出错 | 测试用 |
+| **small** | 244M | ~2GB | 4x | ⭐⭐⭐ | ⚠️ 可能输出繁体 | 内存受限 |
+| **medium** | 769M | ~5GB | 2x | ⭐⭐⭐⭐ | ✅ 准确识别 | **推荐** |
+| large | 1550M | ~10GB | 1x | ⭐⭐⭐⭐⭐ | ✅ 最准确 | 高要求场景 |
+
+**Small 模型的问题：**
+- ❌ 容易输出繁体字（如"這個"而不是"这个"）
+- ❌ 简繁混杂（如"这個系统"）
+- ❌ 同音字错误率高
+- ❌ 标点符号不准确
+
+**Medium 模型的优势：**
+- ✅ 准确率提升 30-50%
+- ✅ 智能识别简繁体（根据口音判断）
+- ✅ 更好的标点符号
+- ✅ 专业术语识别准确
+
+**修改模型大小：**
+编辑 `voice_clones/config.json`：
+```json
+{
+  "whisper": {
+    "model": "medium",  // 可选: tiny, base, small, medium, large
+    "device": "cpu",
+    "compute_type": "int8",
+    "language": "zh"
+  }
+}
+```
 
 **下载方式1：自动下载（首次运行）**
 ```bash
 # 首次生成字幕时会自动下载
-# 下载到: voice_clones/models/faster-whisper-small/
+# 下载到: voice_clones/models/faster-whisper-{model}/
 ```
 
 **下载方式2：手动下载（推荐国内用户）**
 ```bash
 # 从 HuggingFace 镜像下载
-https://hf-mirror.com/Systran/faster-whisper-small
+# Small: https://hf-mirror.com/Systran/faster-whisper-small
+# Medium: https://hf-mirror.com/Systran/faster-whisper-medium
+# Large: https://hf-mirror.com/Systran/faster-whisper-large-v3
 
 # 解压到项目目录
 voice_clones/models/faster-whisper-small/
